@@ -1,25 +1,24 @@
 package opus
 
+/*
+#cgo CFLAGS: -I${SRCDIR}/include/opus
+#cgo LDFLAGS: -L${SRCDIR} -lopus
+#include <opus.h>
+static int go_opus_encoder_set_bitrate(OpusEncoder *enc, opus_int32 bitrate) {
+    return opus_encoder_ctl(enc, OPUS_SET_BITRATE(bitrate));
+}
+static int go_opus_encoder_set_complexity(OpusEncoder *enc, int complexity) {
+    return opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(complexity));
+}
+static int go_opus_encoder_set_signal(OpusEncoder *enc, int signal) {
+    return opus_encoder_ctl(enc, OPUS_SET_SIGNAL(signal));
+}
+*/
+import "C"
 import (
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
-	"sync"
-	"syscall"
 	"unsafe"
 )
-
-// OpusEncoder 封装Opus编码器
-// 这里用uintptr存储C对象指针
-type OpusEncoder struct {
-	encoder uintptr
-}
-
-type OpusDecoder struct {
-	decoder uintptr
-}
 
 // OpusApplication constants
 const (
@@ -28,196 +27,171 @@ const (
 	OpusApplicationLowDelay = 2051
 )
 
-var (
-	opusOnce sync.Once
-	opusErr  error
-
-	libopus *syscall.DLL
-
-	opus_encoder_create  *syscall.Proc
-	opus_encoder_destroy *syscall.Proc
-	opus_encode          *syscall.Proc
-	opus_decoder_create  *syscall.Proc
-	opus_decoder_destroy *syscall.Proc
-	opus_decode          *syscall.Proc
-	opus_strerror        *syscall.Proc
+// Opus encoder control constants
+const (
+	OPUS_SET_BITRATE_REQUEST     = 4002
+	OPUS_SET_COMPLEXITY_REQUEST  = 4010
+	OPUS_SET_SIGNAL_REQUEST      = 4024
+	OPUS_SET_APPLICATION_REQUEST = 4000
 )
 
-func loadOpus() error {
-	opusOnce.Do(func() {
-		var libName string
+// Opus signal types
+const (
+	OPUS_SIGNAL_AUTO  = -1000
+	OPUS_SIGNAL_VOICE = 3001
+	OPUS_SIGNAL_MUSIC = 3002
+)
 
-		switch runtime.GOOS {
-		case "windows":
-			// Check if opus.dll exists in x86 or x64 directory based on architecture
-			currentDir, err := os.Getwd()
-			if err != nil {
-				opusErr = fmt.Errorf("failed to get current directory: %v", err)
-				return
-			}
-
-			// Determine architecture-specific directory
-			archDir := "x64"
-			if runtime.GOARCH == "386" {
-				archDir = "x86"
-			}
-
-			// Try to load from architecture-specific directory first
-			archDllPath := filepath.Join(currentDir, archDir, "opus.dll")
-			if _, err := os.Stat(archDllPath); err == nil {
-				libName = archDllPath
-			} else {
-				// Fallback to current directory
-				localDllPath := filepath.Join(currentDir, "opus.dll")
-				if _, err := os.Stat(localDllPath); err == nil {
-					libName = localDllPath
-				} else {
-					libName = "opus.dll"
-				}
-			}
-			fmt.Println("libName:", libName)
-		case "darwin":
-			libName = "libopus.dylib"
-		default:
-			libName = "libopus.so"
-		}
-
-		lib, err := syscall.LoadDLL(libName)
-		if err != nil {
-			opusErr = fmt.Errorf("failed to load %s: %v", libName, err)
-			return
-		}
-		libopus = lib
-
-		// Load functions using FindProc
-		opus_encoder_create = lib.MustFindProc("opus_encoder_create")
-		opus_encoder_destroy = lib.MustFindProc("opus_encoder_destroy")
-		opus_encode = lib.MustFindProc("opus_encode")
-		opus_decoder_create = lib.MustFindProc("opus_decoder_create")
-		opus_decoder_destroy = lib.MustFindProc("opus_decoder_destroy")
-		opus_decode = lib.MustFindProc("opus_decode")
-		opus_strerror = lib.MustFindProc("opus_strerror")
-	})
-	return opusErr
+// OpusEncoder represents an Opus encoder
+type OpusEncoder struct {
+	encoder *C.OpusEncoder
 }
 
-// NewEncoder 创建并初始化Opus编码器
+// OpusDecoder represents an Opus decoder
+type OpusDecoder struct {
+	decoder *C.OpusDecoder
+}
+
+// NewEncoder creates a new Opus encoder
 func NewEncoder(sampleRate int, channels int, application int) (*OpusEncoder, error) {
-	if err := loadOpus(); err != nil {
-		return nil, err
-	}
 	if sampleRate <= 0 || channels <= 0 || application < 0 {
 		return nil, errors.New("invalid parameter: must be positive")
 	}
-	var errCode int32
-	ret, _, _ := opus_encoder_create.Call(
-		uintptr(sampleRate),
-		uintptr(channels),
-		uintptr(application),
-		uintptr(unsafe.Pointer(&errCode)),
-	)
-	if errCode != 0 {
-		return nil, errors.New(opusStrError(errCode))
+
+	var err C.int
+	encoder := C.opus_encoder_create(C.opus_int32(sampleRate), C.int(channels), C.int(application), &err)
+	if err != 0 {
+		return nil, errors.New(C.GoString(C.opus_strerror(err)))
 	}
-	return &OpusEncoder{encoder: ret}, nil
+
+	return &OpusEncoder{encoder: encoder}, nil
 }
 
-// NewDecoder 创建并初始化Opus解码器
-func NewDecoder(sampleRate int, channels int) (*OpusDecoder, error) {
-	if err := loadOpus(); err != nil {
-		return nil, err
+// SetBitrate sets the bitrate for the encoder
+func (e *OpusEncoder) SetBitrate(bitrate int) error {
+	if e.encoder == nil {
+		return errors.New("encoder not initialized")
 	}
+	ret := C.go_opus_encoder_set_bitrate(e.encoder, C.opus_int32(bitrate))
+	if ret != 0 {
+		return errors.New(C.GoString(C.opus_strerror(ret)))
+	}
+	return nil
+}
+
+// SetComplexity sets the complexity for the encoder
+func (e *OpusEncoder) SetComplexity(complexity int) error {
+	if e.encoder == nil {
+		return errors.New("encoder not initialized")
+	}
+	ret := C.go_opus_encoder_set_complexity(e.encoder, C.int(complexity))
+	if ret != 0 {
+		return errors.New(C.GoString(C.opus_strerror(ret)))
+	}
+	return nil
+}
+
+// SetSignal sets the signal type for the encoder
+func (e *OpusEncoder) SetSignal(signal int) error {
+	if e.encoder == nil {
+		return errors.New("encoder not initialized")
+	}
+	ret := C.go_opus_encoder_set_signal(e.encoder, C.int(signal))
+	if ret != 0 {
+		return errors.New(C.GoString(C.opus_strerror(ret)))
+	}
+	return nil
+}
+
+// NewDecoder creates a new Opus decoder
+func NewDecoder(sampleRate int, channels int) (*OpusDecoder, error) {
 	if sampleRate <= 0 || channels <= 0 {
 		return nil, errors.New("invalid parameter: must be positive")
 	}
-	var errCode int32
-	ret, _, _ := opus_decoder_create.Call(
-		uintptr(sampleRate),
-		uintptr(channels),
-		uintptr(unsafe.Pointer(&errCode)),
-	)
-	if errCode != 0 {
-		return nil, errors.New(opusStrError(errCode))
+
+	var err C.int
+	decoder := C.opus_decoder_create(C.opus_int32(sampleRate), C.int(channels), &err)
+	if err != 0 {
+		return nil, errors.New(C.GoString(C.opus_strerror(err)))
 	}
-	return &OpusDecoder{decoder: ret}, nil
+
+	return &OpusDecoder{decoder: decoder}, nil
 }
 
-// Encode 编码音频数据
+// Encode encodes audio data
 func (e *OpusEncoder) Encode(input []byte, output []byte) (int, error) {
-	if e.encoder == 0 {
+	if e.encoder == nil {
 		return 0, errors.New("encoder not initialized")
 	}
-	pcm := (*int16)(unsafe.Pointer(&input[0]))
-	data := (*byte)(unsafe.Pointer(&output[0]))
-	frameSize := len(input) / 2 // int16
-	ret, _, _ := opus_encode.Call(
-		e.encoder,
-		uintptr(unsafe.Pointer(pcm)),
-		uintptr(frameSize),
-		uintptr(unsafe.Pointer(data)),
-		uintptr(len(output)),
-	)
-	if ret < 0 {
-		return int(ret), errors.New(opusStrError(int32(ret)))
+	if len(input) == 0 {
+		return 0, errors.New("empty input")
 	}
+	if len(output) == 0 {
+		return 0, errors.New("empty output buffer")
+	}
+
+	pcm := (*C.opus_int16)(unsafe.Pointer(&input[0]))
+	data := (*C.uchar)(unsafe.Pointer(&output[0]))
+	frameSize := len(input) / 2 // int16, 单通道
+
+	ret := C.opus_encode(
+		e.encoder,
+		pcm,
+		C.int(frameSize),
+		data,
+		C.opus_int32(len(output)),
+	)
+
+	if ret < 0 {
+		return int(ret), errors.New(C.GoString(C.opus_strerror(C.int(ret))))
+	}
+
 	return int(ret), nil
 }
 
-// Decode 解码音频数据
+// Decode decodes audio data
 func (d *OpusDecoder) Decode(input []byte, output []byte) (int, error) {
-	if d.decoder == 0 {
+	if d.decoder == nil {
 		return 0, errors.New("decoder not initialized")
 	}
-	data := (*byte)(unsafe.Pointer(&input[0]))
-	pcm := (*int16)(unsafe.Pointer(&output[0]))
-	ret, _, _ := opus_decode.Call(
-		d.decoder,
-		uintptr(unsafe.Pointer(data)),
-		uintptr(len(input)),
-		uintptr(unsafe.Pointer(pcm)),
-		uintptr(len(output)/2),
-	)
-	if ret < 0 {
-		return int(ret), errors.New(opusStrError(int32(ret)))
+	if len(input) == 0 {
+		return 0, errors.New("empty input")
 	}
+	if len(output) == 0 {
+		return 0, errors.New("empty output buffer")
+	}
+
+	data := (*C.uchar)(unsafe.Pointer(&input[0]))
+	pcm := (*C.opus_int16)(unsafe.Pointer(&output[0]))
+
+	ret := C.opus_decode(
+		d.decoder,
+		data,
+		C.opus_int32(len(input)),
+		pcm,
+		C.int(len(output)/2), // 单通道，2字节每采样
+		0,                    // decode_fec
+	)
+
+	if ret < 0 {
+		return int(ret), errors.New(C.GoString(C.opus_strerror(C.int(ret))))
+	}
+
 	return int(ret), nil
 }
 
-// Close 释放编码器资源
+// Close frees the encoder resources
 func (e *OpusEncoder) Close() {
-	if e.encoder != 0 {
-		opus_encoder_destroy.Call(e.encoder)
-		e.encoder = 0
+	if e.encoder != nil {
+		C.opus_encoder_destroy(e.encoder)
+		e.encoder = nil
 	}
 }
 
-// Close 释放解码器资源
+// Close frees the decoder resources
 func (d *OpusDecoder) Close() {
-	if d.decoder != 0 {
-		opus_decoder_destroy.Call(d.decoder)
-		d.decoder = 0
+	if d.decoder != nil {
+		C.opus_decoder_destroy(d.decoder)
+		d.decoder = nil
 	}
-}
-
-// opusStrError 获取错误字符串
-func opusStrError(code int32) string {
-	ret, _, _ := opus_strerror.Call(uintptr(code))
-	if ret == 0 {
-		return ""
-	}
-	return unsafe.String((*byte)(unsafe.Pointer(ret)), 1024) // 假设错误消息不会超过1024字节
-}
-
-// unsafeString 将 C 字符串指针转为 Go 字符串
-func unsafeString(ptr uintptr) string {
-	if ptr == 0 {
-		return ""
-	}
-	cstr := (*[1 << 20]byte)(unsafe.Pointer(ptr))
-	for i := 0; i < len(cstr); i++ {
-		if cstr[i] == 0 {
-			return string(cstr[:i])
-		}
-	}
-	return string(cstr[:])
 }
